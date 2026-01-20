@@ -4,8 +4,8 @@ import io
 import logging
 import re
 import csv
-from typing import Dict, List, Optional, Sequence, Tuple
 from pathlib import Path
+from typing import Dict, List, Optional, Sequence, Tuple
 import streamlit as st
 import xlrd
 import xlwt
@@ -30,6 +30,7 @@ TARGET_HEADERS: List[str] = [
 FINAL_HEADERS: List[str] = TARGET_HEADERS + ["Менеджер", "Категория"]
 
 KEYWORDS_FILE = Path("keywords")
+KEYWORDS_EXTENSIONS = ("", ".xls", ".csv", ".txt")
 
 
 def setup_logger() -> Tuple[logging.Logger, List[str]]:
@@ -189,6 +190,20 @@ def load_keywords_table(file_path: Path) -> List[Tuple[str, str]]:
     if not file_path.exists():
         return []
 
+    if file_path.suffix.lower() == ".xls":
+        try:
+            book = xlrd.open_workbook(file_contents=file_path.read_bytes())
+        except Exception:
+            return []
+        sheet = select_sheet(book)
+        keywords: List[Tuple[str, str]] = []
+        for row_idx in range(sheet.nrows):
+            keyword = str(sheet.cell_value(row_idx, 0)).strip()
+            category = str(sheet.cell_value(row_idx, 1)).strip()
+            if keyword:
+                keywords.append((keyword.lower(), category))
+        return keywords
+
     content = file_path.read_text(encoding="utf-8").splitlines()
     rows = [line for line in content if line.strip()]
     if not rows:
@@ -209,6 +224,15 @@ def load_keywords_table(file_path: Path) -> List[Tuple[str, str]]:
         if keyword:
             keywords.append((keyword.lower(), category))
     return keywords
+
+
+def resolve_keywords_path() -> Optional[Path]:
+    """Ищет файл keywords с поддержкой популярных расширений."""
+    for ext in KEYWORDS_EXTENSIONS:
+        candidate = KEYWORDS_FILE.with_suffix(ext) if ext else KEYWORDS_FILE
+        if candidate.exists():
+            return candidate
+    return None
 
 
 def get_category(
@@ -248,19 +272,32 @@ def main() -> None:
         accept_multiple_files=True,
     )
 
+    st.sidebar.header("Загруженные файлы")
+    if uploaded_files:
+        for uploaded in uploaded_files:
+            st.sidebar.write(f"• {uploaded.name}")
+    else:
+        st.sidebar.write("Файлы не выбраны.")
+
     if st.button("Объединить"):
         if not uploaded_files:
             st.warning("Не выбраны файлы.")
             return
 
+        st.write("Прогресс по файлам:")
         progress_files = st.progress(0)
+        st.write("Прогресс по строкам текущего файла:")
         progress_rows = st.progress(0)
 
-        keywords = load_keywords_table(KEYWORDS_FILE)
+        keywords_path = resolve_keywords_path()
+        keywords = load_keywords_table(keywords_path) if keywords_path else []
         if not keywords:
             logger.warning(
                 "Файл keywords не найден или пустой, колонка 'Категория' будет пустой."
             )
+        logger.info(
+            "Встроенные изображения в .xls не переносятся, сохраняются только значения и ссылки."
+        )
 
         all_rows: List[List[object]] = []
         document_header: List[List[object]] = []
@@ -308,6 +345,10 @@ def main() -> None:
                 total_rows_processed += 1
                 number_value = row[number_col_idx] if number_col_idx < len(row) else ""
                 if is_empty(number_value):
+                    continue
+
+                first_col_value = row[0] if len(row) > 0 else ""
+                if is_empty(first_col_value):
                     continue
 
                 product_name = (
