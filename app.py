@@ -9,6 +9,7 @@ from typing import Dict, List, Optional, Sequence, Tuple
 import streamlit as st
 import xlrd
 import xlwt
+from openpyxl import Workbook
 
 
 TARGET_HEADERS: List[str] = [
@@ -184,6 +185,36 @@ def map_row_to_target(
     return result
 
 
+def write_xlsx(
+    document_header: Sequence[Sequence[object]],
+    rows: Sequence[Sequence[object]],
+) -> io.BytesIO:
+    """Записывает итоговые данные в .xlsx для дополнительной выгрузки."""
+    output = io.BytesIO()
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "Общий"
+
+    current_row = 1
+    for header_row in document_header:
+        for col_idx, value in enumerate(header_row, start=1):
+            sheet.cell(row=current_row, column=col_idx, value=value)
+        current_row += 1
+
+    for col_idx, header in enumerate(FINAL_HEADERS, start=1):
+        sheet.cell(row=current_row, column=col_idx, value=header)
+    current_row += 1
+
+    for row in rows:
+        for col_idx, value in enumerate(row, start=1):
+            sheet.cell(row=current_row, column=col_idx, value=value)
+        current_row += 1
+
+    workbook.save(output)
+    output.seek(0)
+    return output
+
+
 @st.cache_data(show_spinner=False)
 def load_keywords_table(file_path: Path) -> List[Tuple[str, str]]:
     """Читает таблицу ключевых слов из файла keywords."""
@@ -271,6 +302,7 @@ def main() -> None:
         type=["xls"],
         accept_multiple_files=True,
     )
+    build_xlsx = st.checkbox("Сформировать дополнительный .xlsx (конвертация .xls → .xlsx)")
 
     st.sidebar.header("Загруженные файлы")
     if uploaded_files:
@@ -403,6 +435,8 @@ def main() -> None:
         workbook.save(output)
         output.seek(0)
 
+        output_xlsx = write_xlsx(document_header, all_rows) if build_xlsx else None
+
         st.success("Объединение завершено.")
         st.write(
             f"Файлов обработано: {total_files}. "
@@ -416,6 +450,13 @@ def main() -> None:
             file_name="Акция ОБЩИЙ.xls",
             mime="application/vnd.ms-excel",
         )
+        if output_xlsx:
+            st.download_button(
+                label="Скачать Акция ОБЩИЙ.xlsx",
+                data=output_xlsx,
+                file_name="Акция ОБЩИЙ.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
 
         st.text_area("Логи", "\n".join(log_messages), height=200)
 
