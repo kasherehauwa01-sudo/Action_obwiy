@@ -241,7 +241,7 @@ def write_xlsx(
             try:
                 with Image.open(io.BytesIO(image_bytes)) as img:
                     buffer = io.BytesIO()
-                    img.thumbnail((120, 120))
+                    img.thumbnail((100, 100))
                     img.save(buffer, format="PNG")
                     buffer.seek(0)
                     openpyxl_image = OpenpyxlImage(buffer)
@@ -249,6 +249,17 @@ def write_xlsx(
                         row=current_row, column=photo_col_index
                     ).coordinate
                     sheet.add_image(openpyxl_image)
+                    sheet.row_dimensions[current_row].height = max(
+                        sheet.row_dimensions[current_row].height or 0,
+                        105,
+                    )
+                    column_letter = sheet.cell(
+                        row=current_row, column=photo_col_index
+                    ).column_letter
+                    sheet.column_dimensions[column_letter].width = max(
+                        sheet.column_dimensions[column_letter].width or 0,
+                        15.0,
+                    )
             except Exception as exc:
                 logger.warning("Не удалось обработать изображение: %s", exc)
         photo_value = row[photo_col_index - 1] if len(row) >= photo_col_index else ""
@@ -262,7 +273,7 @@ def write_xlsx(
                 try:
                     with Image.open(io.BytesIO(image_bytes)) as img:
                         buffer = io.BytesIO()
-                        img.thumbnail((120, 120))
+                        img.thumbnail((100, 100))
                         img.save(buffer, format="PNG")
                         buffer.seek(0)
                         openpyxl_image = OpenpyxlImage(buffer)
@@ -270,6 +281,17 @@ def write_xlsx(
                             row=current_row, column=photo_col_index
                         ).coordinate
                         sheet.add_image(openpyxl_image)
+                        sheet.row_dimensions[current_row].height = max(
+                            sheet.row_dimensions[current_row].height or 0,
+                            105,
+                        )
+                        column_letter = sheet.cell(
+                            row=current_row, column=photo_col_index
+                        ).column_letter
+                        sheet.column_dimensions[column_letter].width = max(
+                            sheet.column_dimensions[column_letter].width or 0,
+                            15.0,
+                        )
                 except Exception as exc:
                     logger.warning("Не удалось обработать изображение: %s", exc)
         current_row += 1
