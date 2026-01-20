@@ -12,6 +12,9 @@ import requests
 import streamlit as st
 import xlrd
 import xlwt
+import shutil
+import subprocess
+import tempfile
 
 
 TARGET_HEADERS: List[str] = [
@@ -204,6 +207,47 @@ def fetch_image_bytes(url: str, logger: logging.Logger) -> Optional[bytes]:
     except requests.RequestException as exc:
         logger.warning("Не удалось скачать изображение %s: %s", url, exc)
         return None
+
+
+def convert_xls_to_xlsx_libreoffice(
+    xls_bytes: bytes, logger: logging.Logger
+) -> Optional[io.BytesIO]:
+    """Конвертирует .xls в .xlsx через LibreOffice в headless-режиме."""
+    libreoffice_path = shutil.which("libreoffice")
+    if not libreoffice_path:
+        logger.warning("LibreOffice не найден, конвертация .xls → .xlsx пропущена.")
+        return None
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        input_path = Path(temp_dir) / "input.xls"
+        output_path = Path(temp_dir) / "input.xlsx"
+        input_path.write_bytes(xls_bytes)
+
+        result = subprocess.run(
+            [
+                libreoffice_path,
+                "--headless",
+                "--convert-to",
+                "xlsx",
+                "--outdir",
+                temp_dir,
+                str(input_path),
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        if result.returncode != 0 or not output_path.exists():
+            logger.warning(
+                "Не удалось конвертировать .xls → .xlsx через LibreOffice: %s",
+                result.stderr.strip() or result.stdout.strip(),
+            )
+            return None
+
+        output = io.BytesIO(output_path.read_bytes())
+        output.seek(0)
+        return output
 
 
 def write_xlsx(
@@ -508,7 +552,11 @@ def main() -> None:
         workbook.save(output)
         output.seek(0)
 
-        output_xlsx = write_xlsx(document_header, all_rows, logger) if build_xlsx else None
+        output_xlsx = None
+        if build_xlsx:
+            output_xlsx = convert_xls_to_xlsx_libreoffice(output.getvalue(), logger)
+            if output_xlsx is None:
+                output_xlsx = write_xlsx(document_header, all_rows, logger)
 
         st.success("Объединение завершено.")
         st.write(
