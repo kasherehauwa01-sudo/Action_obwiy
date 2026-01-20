@@ -376,7 +376,7 @@ def write_xlsx(
                     logger.warning("Не удалось обработать изображение: %s", exc)
         current_row += 1
 
-    sheet.column_dimensions[get_column_letter(name_col_index)].width = 200
+    sheet.column_dimensions[get_column_letter(name_col_index)].width = 60
     sheet.column_dimensions[get_column_letter(code_col_index)].width = max(
         sheet.column_dimensions[get_column_letter(code_col_index)].width or 0,
         code_max_len + 2,
@@ -489,6 +489,9 @@ def main() -> None:
         type=["xlsx"],
         accept_multiple_files=True,
     )
+    if uploaded_files:
+        with st.spinner("Идёт загрузка файлов..."):
+            st.progress(1.0)
     build_xlsx = True
 
     st.sidebar.header("Загруженные файлы")
