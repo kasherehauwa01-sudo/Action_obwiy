@@ -96,7 +96,7 @@ def select_sheet(book: xlrd.book.Book) -> xlrd.sheet.Sheet:
 def get_cell_value(sheet: xlrd.sheet.Sheet, row_idx: int, col_idx: int) -> object:
     """Возвращает значение ячейки, при необходимости подхватывает ссылку из гиперссылки."""
     value = sheet.cell_value(row_idx, col_idx)
-    if not is_empty(value) or not hasattr(sheet, "hyperlink_map"):
+    if not hasattr(sheet, "hyperlink_map"):
         return value
     hyperlink_map = sheet.hyperlink_map or {}
     hyperlink = hyperlink_map.get((row_idx, col_idx))
