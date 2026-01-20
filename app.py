@@ -3,15 +3,12 @@ from __future__ import annotations
 import io
 import logging
 import re
-import time
+import csv
 from typing import Dict, List, Optional, Sequence, Tuple
-from urllib.parse import quote_plus
-
-import requests
+from pathlib import Path
 import streamlit as st
 import xlrd
 import xlwt
-from bs4 import BeautifulSoup
 
 
 TARGET_HEADERS: List[str] = [
@@ -31,6 +28,8 @@ TARGET_HEADERS: List[str] = [
     "наценка",
 ]
 FINAL_HEADERS: List[str] = TARGET_HEADERS + ["Менеджер", "Категория"]
+
+KEYWORDS_FILE = Path("keywords")
 
 
 def setup_logger() -> Tuple[logging.Logger, List[str]]:
@@ -185,79 +184,46 @@ def map_row_to_target(
 
 
 @st.cache_data(show_spinner=False)
-def fetch_category_cached(query_key: str, query_value: str) -> str:
-    """Получает категорию товара с сайта, результат кэшируется."""
-    if not query_value:
-        return ""
+def load_keywords_table(file_path: Path) -> List[Tuple[str, str]]:
+    """Читает таблицу ключевых слов из файла keywords."""
+    if not file_path.exists():
+        return []
 
-    headers = {"User-Agent": "Mozilla/5.0"}
-    search_url = f"https://volgorost.ru/search/?q={quote_plus(query_value)}"
+    content = file_path.read_text(encoding="utf-8").splitlines()
+    rows = [line for line in content if line.strip()]
+    if not rows:
+        return []
 
+    sample = "\n".join(rows[:5])
     try:
-        response = requests.get(search_url, headers=headers, timeout=10)
-        response.raise_for_status()
-    except requests.RequestException:
-        return ""
+        dialect = csv.Sniffer().sniff(sample, delimiters=";\t,")
+    except csv.Error:
+        dialect = csv.excel
 
-    soup = BeautifulSoup(response.text, "lxml")
-    product_link = None
-    for link in soup.select("a[href]"):
-        href = link.get("href", "")
-        if "/catalog/" in href and href.count("/") >= 2:
-            product_link = href
-            break
-
-    if not product_link:
-        return ""
-
-    if product_link.startswith("/"):
-        product_link = f"https://volgorost.ru{product_link}"
-
-    time.sleep(0.3)
-
-    try:
-        product_response = requests.get(product_link, headers=headers, timeout=10)
-        product_response.raise_for_status()
-    except requests.RequestException:
-        return ""
-
-    product_soup = BeautifulSoup(product_response.text, "lxml")
-    breadcrumb = product_soup.select_one(".breadcrumb, .breadcrumbs, nav.breadcrumbs")
-    if not breadcrumb:
-        return ""
-
-    parts = [
-        normalize_header(item.get_text(" ", strip=True))
-        for item in breadcrumb.find_all(["a", "span", "li"])
-    ]
-    parts = [part for part in parts if part]
-
-    if "каталог" in parts:
-        idx = parts.index("каталог")
-        if idx + 1 < len(parts):
-            return parts[idx + 1].title()
-    if parts:
-        return parts[-1].title()
-    return ""
-
-
-def get_category(query_dict: Dict[str, object], enabled: bool, logger: logging.Logger) -> str:
-    """Определяет категорию по приоритету: Код, Артикул, Наименование товаров."""
-    if not enabled:
-        return ""
-
-    priority = ["Код", "Артикул", "Наименование товаров"]
-    for key in priority:
-        value = query_dict.get(key)
-        if value is None:
+    keywords: List[Tuple[str, str]] = []
+    for row in csv.reader(rows, dialect):
+        if len(row) < 2:
             continue
-        value_str = str(value).strip()
-        if not value_str:
-            continue
-        category = fetch_category_cached(key, value_str)
-        if category:
+        keyword = row[0].strip()
+        category = row[1].strip()
+        if keyword:
+            keywords.append((keyword.lower(), category))
+    return keywords
+
+
+def get_category(
+    product_name: str,
+    keywords: Sequence[Tuple[str, str]],
+    logger: logging.Logger,
+) -> str:
+    """Определяет категорию по ключевым словам из файла keywords."""
+    if not product_name:
+        return ""
+    name_lower = product_name.lower()
+    for keyword, category in keywords:
+        if keyword and keyword in name_lower:
+            logger.info("Категория определена по ключевому слову '%s'.", keyword)
             return category
-        logger.info("Категория не найдена для %s: %s", key, value_str)
     return ""
 
 
@@ -281,7 +247,6 @@ def main() -> None:
         type=["xls"],
         accept_multiple_files=True,
     )
-    enable_category = st.checkbox("Заполнять категорию (долго)", value=False)
 
     if st.button("Объединить"):
         if not uploaded_files:
@@ -290,6 +255,12 @@ def main() -> None:
 
         progress_files = st.progress(0)
         progress_rows = st.progress(0)
+
+        keywords = load_keywords_table(KEYWORDS_FILE)
+        if not keywords:
+            logger.warning(
+                "Файл keywords не найден или пустой, колонка 'Категория' будет пустой."
+            )
 
         all_rows: List[List[object]] = []
         document_header: List[List[object]] = []
@@ -339,22 +310,14 @@ def main() -> None:
                 if is_empty(number_value):
                     continue
 
-                query_dict = {
-                    "Код": row[source_header_map.get("код", -1)]
-                    if "код" in source_header_map and source_header_map["код"] < len(row)
-                    else "",
-                    "Артикул": row[source_header_map.get("артикул", -1)]
-                    if "артикул" in source_header_map and source_header_map["артикул"] < len(row)
-                    else "",
-                    "Наименование товаров": row[
-                        source_header_map.get("наименование товаров", -1)
-                    ]
+                product_name = (
+                    row[source_header_map.get("наименование товаров", -1)]
                     if "наименование товаров" in source_header_map
                     and source_header_map["наименование товаров"] < len(row)
-                    else "",
-                }
+                    else ""
+                )
 
-                category = get_category(query_dict, enable_category, logger)
+                category = get_category(str(product_name), keywords, logger)
                 if category:
                     categories_found += 1
 
