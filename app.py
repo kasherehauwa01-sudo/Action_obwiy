@@ -4,7 +4,7 @@ import io
 import logging
 import re
 import time
-from typing import Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 from urllib.parse import quote_plus
 
 import requests
@@ -93,13 +93,30 @@ def select_sheet(book: xlrd.book.Book) -> xlrd.sheet.Sheet:
     return best_sheet
 
 
-def read_xls_to_rows(file_bytes: bytes) -> List[List[object]]:
-    """Читает .xls в список строк."""
+def get_cell_value(sheet: xlrd.sheet.Sheet, row_idx: int, col_idx: int) -> object:
+    """Возвращает значение ячейки, при необходимости подхватывает ссылку из гиперссылки."""
+    value = sheet.cell_value(row_idx, col_idx)
+    if not is_empty(value) or not hasattr(sheet, "hyperlink_map"):
+        return value
+    hyperlink_map = sheet.hyperlink_map or {}
+    hyperlink = hyperlink_map.get((row_idx, col_idx))
+    if hyperlink and getattr(hyperlink, "url_or_path", ""):
+        return hyperlink.url_or_path
+    return value
+
+
+def read_xls_to_rows(file_bytes: bytes, logger: logging.Logger) -> List[List[object]]:
+    """Читает .xls в список строк, стараясь сохранить гиперссылки."""
     book = xlrd.open_workbook(file_contents=file_bytes)
     sheet = select_sheet(book)
+    if hasattr(sheet, "hyperlink_map") and sheet.hyperlink_map:
+        logger.info("Найдены гиперссылки на листе, попробуем перенести их как значения.")
     rows: List[List[object]] = []
     for row_idx in range(sheet.nrows):
-        rows.append(sheet.row_values(row_idx))
+        row_values: List[object] = []
+        for col_idx in range(sheet.ncols):
+            row_values.append(get_cell_value(sheet, row_idx, col_idx))
+        rows.append(row_values)
     return rows
 
 
@@ -287,7 +304,7 @@ def main() -> None:
             logger.info("Обработка файла: %s", filename)
 
             try:
-                rows = read_xls_to_rows(uploaded.getvalue())
+                rows = read_xls_to_rows(uploaded.getvalue(), logger)
             except Exception as exc:
                 logger.error("Не удалось прочитать файл %s: %s", filename, exc)
                 progress_files.progress(file_index / total_files)
