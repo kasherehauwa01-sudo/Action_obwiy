@@ -323,7 +323,7 @@ def write_xlsx(
             try:
                 with Image.open(io.BytesIO(image_bytes)) as img:
                     buffer = io.BytesIO()
-                    img.thumbnail((100, 100))
+                    img.thumbnail((90, 90))
                     img.save(buffer, format="PNG")
                     buffer.seek(0)
                     openpyxl_image = OpenpyxlImage(buffer)
@@ -331,8 +331,8 @@ def write_xlsx(
                         row=current_row, column=photo_col_index
                     ).coordinate
                     openpyxl_image.anchor = f"{get_column_letter(photo_col_index)}{current_row}"
-                    openpyxl_image.width = 100
-                    openpyxl_image.height = 100
+                    openpyxl_image.width = 90
+                    openpyxl_image.height = 90
                     sheet.add_image(openpyxl_image)
                     sheet.row_dimensions[current_row].height = max(
                         sheet.row_dimensions[current_row].height or 0,
@@ -358,7 +358,7 @@ def write_xlsx(
                 try:
                     with Image.open(io.BytesIO(image_bytes)) as img:
                         buffer = io.BytesIO()
-                        img.thumbnail((100, 100))
+                        img.thumbnail((90, 90))
                         img.save(buffer, format="PNG")
                         buffer.seek(0)
                         openpyxl_image = OpenpyxlImage(buffer)
@@ -366,8 +366,8 @@ def write_xlsx(
                             row=current_row, column=photo_col_index
                         ).coordinate
                         openpyxl_image.anchor = f"{get_column_letter(photo_col_index)}{current_row}"
-                        openpyxl_image.width = 100
-                        openpyxl_image.height = 100
+                        openpyxl_image.width = 90
+                        openpyxl_image.height = 90
                         sheet.add_image(openpyxl_image)
                         sheet.row_dimensions[current_row].height = max(
                             sheet.row_dimensions[current_row].height or 0,
