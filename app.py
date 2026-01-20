@@ -30,7 +30,7 @@ TARGET_HEADERS: List[str] = [
     "Цена опт.",
     "Закупочная",
     "скидка",
-    "акция",
+    "Акционная цена",
     "наценка",
 ]
 FINAL_HEADERS: List[str] = TARGET_HEADERS + ["Менеджер", "Категория"]
@@ -152,8 +152,8 @@ def build_source_header_map(header_row: Sequence[object]) -> Dict[str, int]:
         key = normalize_header(cell)
         if key and key not in mapping:
             mapping[key] = idx
-        if key == "акционная цена" and "акция" not in mapping:
-            mapping["акция"] = idx
+        if key == "акция" and "акционная цена" not in mapping:
+            mapping["акционная цена"] = idx
     return mapping
 
 
@@ -252,11 +252,15 @@ def write_xlsx(
             cell.border = white_border
         current_row += 1
 
+    action_col_index = FINAL_HEADERS.index("Акционная цена") + 1
     for col_idx, header in enumerate(FINAL_HEADERS, start=1):
         cell = sheet.cell(row=current_row, column=col_idx, value=header)
         cell.fill = header_fill
         cell.font = header_font
-        cell.alignment = header_alignment
+        if col_idx in (1, 2, action_col_index):
+            cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        else:
+            cell.alignment = header_alignment
         cell.border = thin_border
     current_row += 1
 
@@ -265,23 +269,25 @@ def write_xlsx(
     name_col_index = FINAL_HEADERS.index("Наименование товаров") + 1
     discount_col_index = FINAL_HEADERS.index("скидка") + 1
     markup_col_index = FINAL_HEADERS.index("наценка") + 1
-    action_col_index = FINAL_HEADERS.index("акция") + 1
+    action_col_index = FINAL_HEADERS.index("Акционная цена") + 1
     purchase_col_index = FINAL_HEADERS.index("Закупочная") + 1
     manager_col_index = FINAL_HEADERS.index("Менеджер") + 1
     category_col_index = FINAL_HEADERS.index("Категория") + 1
     code_max_len = max(len("Код"), 1)
-    col_a_max_len = max(len(FINAL_HEADERS[0]), 1)
-    col_b_max_len = max(len(FINAL_HEADERS[1]), 1)
     header_based_widths = {
         purchase_col_index: len("Закупочная") + 2,
         discount_col_index: len("скидка") + 2,
-        action_col_index: len("акция") + 2,
+        action_col_index: 10,
         markup_col_index: len("наценка") + 2,
         manager_col_index: len("Менеджер") + 2,
         category_col_index: len("Категория") + 2,
     }
 
     for row_index, row in enumerate(rows):
+        sheet.row_dimensions[current_row].height = max(
+            sheet.row_dimensions[current_row].height or 0,
+            15 * 1.05,
+        )
         for col_idx, value in enumerate(row, start=1):
             cell = sheet.cell(row=current_row, column=col_idx, value=value)
             cell.border = thin_border
@@ -292,10 +298,6 @@ def write_xlsx(
 
             if col_idx == code_col_index and value is not None:
                 code_max_len = max(code_max_len, len(str(value)))
-            if col_idx == 1 and value is not None:
-                col_a_max_len = max(col_a_max_len, len(str(value)))
-            if col_idx == 2 and value is not None:
-                col_b_max_len = max(col_b_max_len, len(str(value)))
 
             if col_idx == discount_col_index and value is not None:
                 try:
@@ -328,6 +330,9 @@ def write_xlsx(
                     openpyxl_image.anchor = sheet.cell(
                         row=current_row, column=photo_col_index
                     ).coordinate
+                    openpyxl_image.anchor = f"{get_column_letter(photo_col_index)}{current_row}"
+                    openpyxl_image.width = 100
+                    openpyxl_image.height = 100
                     sheet.add_image(openpyxl_image)
                     sheet.row_dimensions[current_row].height = max(
                         sheet.row_dimensions[current_row].height or 0,
@@ -360,6 +365,9 @@ def write_xlsx(
                         openpyxl_image.anchor = sheet.cell(
                             row=current_row, column=photo_col_index
                         ).coordinate
+                        openpyxl_image.anchor = f"{get_column_letter(photo_col_index)}{current_row}"
+                        openpyxl_image.width = 100
+                        openpyxl_image.height = 100
                         sheet.add_image(openpyxl_image)
                         sheet.row_dimensions[current_row].height = max(
                             sheet.row_dimensions[current_row].height or 0,
@@ -381,14 +389,8 @@ def write_xlsx(
         sheet.column_dimensions[get_column_letter(code_col_index)].width or 0,
         code_max_len + 2,
     )
-    sheet.column_dimensions[get_column_letter(1)].width = max(
-        sheet.column_dimensions[get_column_letter(1)].width or 0,
-        col_a_max_len + 2,
-    )
-    sheet.column_dimensions[get_column_letter(2)].width = max(
-        sheet.column_dimensions[get_column_letter(2)].width or 0,
-        col_b_max_len + 2,
-    )
+    sheet.column_dimensions[get_column_letter(1)].width = 10
+    sheet.column_dimensions[get_column_letter(2)].width = 10
     for col_index, width in header_based_widths.items():
         sheet.column_dimensions[get_column_letter(col_index)].width = max(
             sheet.column_dimensions[get_column_letter(col_index)].width or 0,
@@ -526,6 +528,7 @@ def main() -> None:
 
         for uploaded in uploaded_files:
             filename = uploaded.name
+            logger.info("Файл для обработки: %s", filename)
             try:
                 rows, images_by_row = read_xlsx_to_rows(
                     uploaded.getvalue(),
@@ -542,6 +545,11 @@ def main() -> None:
 
             header_row = rows[header_row_idx]
             source_header_map = prepare_source_header_map(header_row)
+            logger.info("Найдена строка шапки таблицы: %s", header_row_idx + 1)
+            logger.info(
+                "Колонки в источнике (нормализованные): %s",
+                ", ".join(sorted(source_header_map.keys())),
+            )
             number_col_idx = find_number_column(source_header_map)
             if number_col_idx is None:
                 logger.warning(
@@ -549,6 +557,19 @@ def main() -> None:
                     filename,
                 )
                 continue
+            logger.info("Колонка '№' найдена: %s", number_col_idx + 1)
+
+            target_to_source = {}
+            missing_targets = []
+            for header in TARGET_HEADERS[2:]:
+                key = normalize_header(header)
+                if key in source_header_map:
+                    target_to_source[header] = source_header_map[key] + 1
+                else:
+                    missing_targets.append(header)
+            logger.info("Сопоставление колонок: %s", target_to_source)
+            if missing_targets:
+                logger.warning("Колонки без источника: %s", ", ".join(missing_targets))
 
             data_rows = rows[header_row_idx + 1 :]
             prepared_files.append(
@@ -577,6 +598,34 @@ def main() -> None:
 
             data_rows = rows[header_row_idx + 1 :]
             for row_index, row in enumerate(data_rows, start=1):
+                if row_index <= 3:
+                    logger.info(
+                        "Пример строки %s: код=%s, наименование=%s, акционная цена=%s, скидка=%s, закупочная=%s",
+                        row_index,
+                        row[source_header_map.get("код", -1)]
+                        if "код" in source_header_map
+                        and source_header_map["код"] < len(row)
+                        else "",
+                        row[source_header_map.get("наименование товаров", -1)]
+                        if "наименование товаров" in source_header_map
+                        and source_header_map["наименование товаров"] < len(row)
+                        else "",
+                        row[source_header_map.get("акционная цена", -1)]
+                        if "акционная цена" in source_header_map
+                        and source_header_map["акционная цена"] < len(row)
+                        else row[source_header_map.get("акция", -1)]
+                        if "акция" in source_header_map
+                        and source_header_map["акция"] < len(row)
+                        else "",
+                        row[source_header_map.get("скидка", -1)]
+                        if "скидка" in source_header_map
+                        and source_header_map["скидка"] < len(row)
+                        else "",
+                        row[source_header_map.get("закупочная", -1)]
+                        if "закупочная" in source_header_map
+                        and source_header_map["закупочная"] < len(row)
+                        else "",
+                    )
                 number_value = row[number_col_idx] if number_col_idx < len(row) else ""
                 if is_empty(number_value):
                     continue
