@@ -1,6 +1,4 @@
 streamlit
-xlrd==2.*
-xlwt
 openpyxl
 requests
 pillow

@@ -1,20 +1,18 @@
 from __future__ import annotations
 
+import csv
 import io
 import logging
 import re
-import csv
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
 
 import importlib.util
 import requests
 import streamlit as st
-import xlrd
-import xlwt
-import shutil
-import subprocess
-import tempfile
+from openpyxl import load_workbook, Workbook
+from openpyxl.drawing.image import Image as OpenpyxlImage
+from PIL import Image
 
 
 TARGET_HEADERS: List[str] = [
@@ -36,12 +34,12 @@ TARGET_HEADERS: List[str] = [
 FINAL_HEADERS: List[str] = TARGET_HEADERS + ["Менеджер", "Категория"]
 
 KEYWORDS_FILE = Path("keywords")
-KEYWORDS_EXTENSIONS = ("", ".xls", ".csv", ".txt")
+KEYWORDS_EXTENSIONS = ("", ".xlsx", ".csv", ".txt")
 
 
 def setup_logger() -> Tuple[logging.Logger, List[str]]:
     """Настраивает логирование с сохранением сообщений для вывода в UI."""
-    logger = logging.getLogger("xls_merge")
+    logger = logging.getLogger("xlsx_merge")
     logger.setLevel(logging.INFO)
     logger.handlers.clear()
 
@@ -83,14 +81,13 @@ def is_empty(value: object) -> bool:
     return False
 
 
-def select_sheet(book: xlrd.book.Book) -> xlrd.sheet.Sheet:
+def select_sheet(workbook: Workbook) -> object:
     """Выбирает лист с максимальным числом заполненных строк."""
-    best_sheet = book.sheet_by_index(0)
+    best_sheet = workbook.active
     best_count = -1
-    for sheet in book.sheets():
+    for sheet in workbook.worksheets:
         filled = 0
-        for row_idx in range(sheet.nrows):
-            row = sheet.row_values(row_idx)
+        for row in sheet.iter_rows(values_only=True):
             if any(not is_empty(cell) for cell in row):
                 filled += 1
         if filled > best_count:
@@ -99,59 +96,29 @@ def select_sheet(book: xlrd.book.Book) -> xlrd.sheet.Sheet:
     return best_sheet
 
 
-def get_cell_value(sheet: xlrd.sheet.Sheet, row_idx: int, col_idx: int) -> object:
-    """Возвращает значение ячейки, при необходимости подхватывает ссылку из гиперссылки."""
-    value = sheet.cell_value(row_idx, col_idx)
-    if not hasattr(sheet, "hyperlink_map"):
-        return value
-    hyperlink_map = sheet.hyperlink_map or {}
-    hyperlink = hyperlink_map.get((row_idx, col_idx))
-    if hyperlink and getattr(hyperlink, "url_or_path", ""):
-        return hyperlink.url_or_path
-    return value
-
-
-def read_xls_to_rows(
+def read_xlsx_to_rows(
     file_bytes: bytes,
-    libreoffice_path: Optional[str],
     logger: logging.Logger,
 ) -> Tuple[List[List[object]], Dict[int, List[bytes]]]:
-    """Читает .xls в список строк и пытается извлечь изображения через конвертацию."""
-    if libreoffice_path and importlib.util.find_spec("openpyxl") is not None:
-        converted = convert_xls_to_xlsx_libreoffice(file_bytes, libreoffice_path, logger)
-        if converted is not None:
-            try:
-                from openpyxl import load_workbook
-                from openpyxl.drawing.image import Image as OpenpyxlImage
-                from PIL import Image
-            except Exception as exc:
-                logger.warning("Не удалось импортировать openpyxl/Pillow: %s", exc)
-            else:
-                workbook = load_workbook(converted)
-                sheet = workbook.active
-                rows = [list(row) for row in sheet.iter_rows(values_only=True)]
-                images_by_row: Dict[int, List[bytes]] = {}
-                for image in getattr(sheet, "_images", []):
-                    try:
-                        anchor = image.anchor
-                        row_idx = anchor._from.row
-                        image_bytes = image._data()
-                        images_by_row.setdefault(row_idx, []).append(image_bytes)
-                    except Exception as exc:
-                        logger.warning("Не удалось извлечь изображение из .xlsx: %s", exc)
-                return rows, images_by_row
+    """Читает .xlsx в список строк и извлекает изображения."""
+    try:
+        workbook = load_workbook(io.BytesIO(file_bytes))
+    except Exception as exc:
+        logger.error("Не удалось открыть .xlsx файл: %s", exc)
+        return [], {}
 
-    book = xlrd.open_workbook(file_contents=file_bytes)
-    sheet = select_sheet(book)
-    if hasattr(sheet, "hyperlink_map") and sheet.hyperlink_map:
-        logger.info("Найдены гиперссылки на листе, попробуем перенести их как значения.")
-    rows: List[List[object]] = []
-    for row_idx in range(sheet.nrows):
-        row_values: List[object] = []
-        for col_idx in range(sheet.ncols):
-            row_values.append(get_cell_value(sheet, row_idx, col_idx))
-        rows.append(row_values)
-    return rows, {}
+    sheet = select_sheet(workbook)
+    rows = [list(row) for row in sheet.iter_rows(values_only=True)]
+    images_by_row: Dict[int, List[bytes]] = {}
+    for image in getattr(sheet, "_images", []):
+        try:
+            anchor = image.anchor
+            row_idx = anchor._from.row
+            image_bytes = image._data()
+            images_by_row.setdefault(row_idx, []).append(image_bytes)
+        except Exception as exc:
+            logger.warning("Не удалось извлечь изображение из .xlsx: %s", exc)
+    return rows, images_by_row
 
 
 def detect_table_header_row(rows: Sequence[Sequence[object]]) -> Optional[int]:
@@ -237,47 +204,6 @@ def fetch_image_bytes(url: str, logger: logging.Logger) -> Optional[bytes]:
         return None
 
 
-def convert_xls_to_xlsx_libreoffice(
-    xls_bytes: bytes,
-    libreoffice_path: Optional[str],
-    logger: logging.Logger,
-) -> Optional[io.BytesIO]:
-    """Конвертирует .xls в .xlsx через LibreOffice в headless-режиме."""
-    if not libreoffice_path:
-        return None
-
-    with tempfile.TemporaryDirectory() as temp_dir:
-        input_path = Path(temp_dir) / "input.xls"
-        output_path = Path(temp_dir) / "input.xlsx"
-        input_path.write_bytes(xls_bytes)
-
-        result = subprocess.run(
-            [
-                libreoffice_path,
-                "--headless",
-                "--convert-to",
-                "xlsx",
-                "--outdir",
-                temp_dir,
-                str(input_path),
-            ],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-
-        if result.returncode != 0 or not output_path.exists():
-            logger.warning(
-                "Не удалось конвертировать .xls → .xlsx через LibreOffice: %s",
-                result.stderr.strip() or result.stdout.strip(),
-            )
-            return None
-
-        output = io.BytesIO(output_path.read_bytes())
-        output.seek(0)
-        return output
-
-
 def write_xlsx(
     document_header: Sequence[Sequence[object]],
     rows: Sequence[Sequence[object]],
@@ -290,10 +216,6 @@ def write_xlsx(
         return None
     if importlib.util.find_spec("PIL") is None:
         logger.warning("pillow не установлен, изображения в .xlsx не будут вставлены.")
-
-    from openpyxl import Workbook
-    from openpyxl.drawing.image import Image as OpenpyxlImage
-    from PIL import Image
 
     output = io.BytesIO()
     workbook = Workbook()
@@ -363,16 +285,18 @@ def load_keywords_table(file_path: Path) -> List[Tuple[str, str]]:
     if not file_path.exists():
         return []
 
-    if file_path.suffix.lower() == ".xls":
+    if file_path.suffix.lower() == ".xlsx":
         try:
-            book = xlrd.open_workbook(file_contents=file_path.read_bytes())
+            workbook = load_workbook(file_path)
         except Exception:
             return []
-        sheet = select_sheet(book)
+        sheet = select_sheet(workbook)
         keywords: List[Tuple[str, str]] = []
-        for row_idx in range(sheet.nrows):
-            keyword = str(sheet.cell_value(row_idx, 0)).strip()
-            category = str(sheet.cell_value(row_idx, 1)).strip()
+        for row in sheet.iter_rows(values_only=True):
+            if not row:
+                continue
+            keyword = str(row[0]).strip() if len(row) > 0 else ""
+            category = str(row[1]).strip() if len(row) > 1 else ""
             if keyword:
                 keywords.append((keyword.lower(), category))
         return keywords
@@ -430,18 +354,18 @@ def prepare_source_header_map(header_row: Sequence[object]) -> Dict[str, int]:
 
 
 def main() -> None:
-    st.set_page_config(page_title="Объединение .xls", layout="wide")
-    st.title("Объединение .xls файлов")
+    st.set_page_config(page_title="Объединение .xlsx", layout="wide")
+    st.title("Объединение .xlsx файлов")
     st.write(
-        "Загрузите несколько файлов Excel 97-2003 (.xls), чтобы получить единый файл "
+        "Загрузите несколько файлов Excel (.xlsx), чтобы получить единый файл "
         "с унифицированными колонками."
     )
 
     logger, log_messages = setup_logger()
 
     uploaded_files = st.file_uploader(
-        "Загрузите .xls файлы",
-        type=["xls"],
+        "Загрузите .xlsx файлы",
+        type=["xlsx"],
         accept_multiple_files=True,
     )
     build_xlsx = True
@@ -469,13 +393,8 @@ def main() -> None:
             logger.warning(
                 "Файл keywords не найден или пустой, колонка 'Категория' будет пустой."
             )
-        libreoffice_path = shutil.which("libreoffice")
-        if not libreoffice_path:
-            logger.warning(
-                "LibreOffice не найден, конвертация .xls → .xlsx пропущена."
-            )
         logger.info(
-            "Встроенные изображения в .xls не переносятся, сохраняются только значения и ссылки."
+            "Встроенные изображения в .xlsx переносятся, если они присутствуют на листе."
         )
 
         all_rows: List[List[object]] = []
@@ -489,9 +408,8 @@ def main() -> None:
         for uploaded in uploaded_files:
             filename = uploaded.name
             try:
-                rows, images_by_row = read_xls_to_rows(
+                rows, images_by_row = read_xlsx_to_rows(
                     uploaded.getvalue(),
-                    libreoffice_path,
                     logger,
                 )
             except Exception as exc:
@@ -581,37 +499,9 @@ def main() -> None:
             st.text_area("Логи", "\n".join(log_messages), height=200)
             return
 
-        output_xls = io.BytesIO()
-        workbook = xlwt.Workbook()
-        sheet = workbook.add_sheet("Общий")
-
-        current_row = 0
-        for header_row in document_header:
-            for col_idx, value in enumerate(header_row):
-                sheet.write(current_row, col_idx, value)
-            current_row += 1
-
-        for col_idx, header in enumerate(FINAL_HEADERS):
-            sheet.write(current_row, col_idx, header)
-        current_row += 1
-
-        for row in all_rows:
-            for col_idx, value in enumerate(row):
-                sheet.write(current_row, col_idx, value)
-            current_row += 1
-
-        workbook.save(output_xls)
-        output_xls.seek(0)
-
         output_xlsx = None
         if build_xlsx:
-            output_xlsx = convert_xls_to_xlsx_libreoffice(
-                output_xls.getvalue(),
-                libreoffice_path,
-                logger,
-            )
-            if output_xlsx is None:
-                output_xlsx = write_xlsx(document_header, all_rows, all_images, logger)
+            output_xlsx = write_xlsx(document_header, all_rows, all_images, logger)
 
         st.success("Объединение завершено.")
         st.write(
