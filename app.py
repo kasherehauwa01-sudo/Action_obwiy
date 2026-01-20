@@ -111,8 +111,36 @@ def get_cell_value(sheet: xlrd.sheet.Sheet, row_idx: int, col_idx: int) -> objec
     return value
 
 
-def read_xls_to_rows(file_bytes: bytes, logger: logging.Logger) -> List[List[object]]:
-    """Читает .xls в список строк, стараясь сохранить гиперссылки."""
+def read_xls_to_rows(
+    file_bytes: bytes,
+    libreoffice_path: Optional[str],
+    logger: logging.Logger,
+) -> Tuple[List[List[object]], Dict[int, List[bytes]]]:
+    """Читает .xls в список строк и пытается извлечь изображения через конвертацию."""
+    if libreoffice_path and importlib.util.find_spec("openpyxl") is not None:
+        converted = convert_xls_to_xlsx_libreoffice(file_bytes, libreoffice_path, logger)
+        if converted is not None:
+            try:
+                from openpyxl import load_workbook
+                from openpyxl.drawing.image import Image as OpenpyxlImage
+                from PIL import Image
+            except Exception as exc:
+                logger.warning("Не удалось импортировать openpyxl/Pillow: %s", exc)
+            else:
+                workbook = load_workbook(converted)
+                sheet = workbook.active
+                rows = [list(row) for row in sheet.iter_rows(values_only=True)]
+                images_by_row: Dict[int, List[bytes]] = {}
+                for image in getattr(sheet, "_images", []):
+                    try:
+                        anchor = image.anchor
+                        row_idx = anchor._from.row
+                        image_bytes = image._data()
+                        images_by_row.setdefault(row_idx, []).append(image_bytes)
+                    except Exception as exc:
+                        logger.warning("Не удалось извлечь изображение из .xlsx: %s", exc)
+                return rows, images_by_row
+
     book = xlrd.open_workbook(file_contents=file_bytes)
     sheet = select_sheet(book)
     if hasattr(sheet, "hyperlink_map") and sheet.hyperlink_map:
@@ -123,7 +151,7 @@ def read_xls_to_rows(file_bytes: bytes, logger: logging.Logger) -> List[List[obj
         for col_idx in range(sheet.ncols):
             row_values.append(get_cell_value(sheet, row_idx, col_idx))
         rows.append(row_values)
-    return rows
+    return rows, {}
 
 
 def detect_table_header_row(rows: Sequence[Sequence[object]]) -> Optional[int]:
@@ -253,6 +281,7 @@ def convert_xls_to_xlsx_libreoffice(
 def write_xlsx(
     document_header: Sequence[Sequence[object]],
     rows: Sequence[Sequence[object]],
+    images_for_rows: Sequence[List[bytes]],
     logger: logging.Logger,
 ) -> Optional[io.BytesIO]:
     """Записывает итоговые данные в .xlsx для дополнительной выгрузки."""
@@ -282,11 +311,30 @@ def write_xlsx(
     current_row += 1
 
     photo_col_index = FINAL_HEADERS.index("Фото") + 1
-    for row in rows:
+    for row_index, row in enumerate(rows):
         for col_idx, value in enumerate(row, start=1):
             sheet.cell(row=current_row, column=col_idx, value=value)
+        images = images_for_rows[row_index] if row_index < len(images_for_rows) else []
+        for image_bytes in images:
+            try:
+                with Image.open(io.BytesIO(image_bytes)) as img:
+                    buffer = io.BytesIO()
+                    img.thumbnail((120, 120))
+                    img.save(buffer, format="PNG")
+                    buffer.seek(0)
+                    openpyxl_image = OpenpyxlImage(buffer)
+                    openpyxl_image.anchor = sheet.cell(
+                        row=current_row, column=photo_col_index
+                    ).coordinate
+                    sheet.add_image(openpyxl_image)
+            except Exception as exc:
+                logger.warning("Не удалось обработать изображение: %s", exc)
         photo_value = row[photo_col_index - 1] if len(row) >= photo_col_index else ""
-        if is_url(photo_value) and importlib.util.find_spec("PIL") is not None:
+        if (
+            not images
+            and is_url(photo_value)
+            and importlib.util.find_spec("PIL") is not None
+        ):
             image_bytes = fetch_image_bytes(str(photo_value), logger)
             if image_bytes:
                 try:
@@ -431,6 +479,7 @@ def main() -> None:
         )
 
         all_rows: List[List[object]] = []
+        all_images: List[List[bytes]] = []
         document_header: List[List[object]] = []
         total_files = len(uploaded_files)
         total_rows_added = 0
@@ -440,7 +489,11 @@ def main() -> None:
         for uploaded in uploaded_files:
             filename = uploaded.name
             try:
-                rows = read_xls_to_rows(uploaded.getvalue(), logger)
+                rows, images_by_row = read_xls_to_rows(
+                    uploaded.getvalue(),
+                    libreoffice_path,
+                    logger,
+                )
             except Exception as exc:
                 logger.error("Не удалось прочитать файл %s: %s", filename, exc)
                 continue
@@ -468,6 +521,7 @@ def main() -> None:
                     "header_row_idx": header_row_idx,
                     "source_header_map": source_header_map,
                     "number_col_idx": number_col_idx,
+                    "images_by_row": images_by_row,
                 }
             )
 
@@ -478,6 +532,7 @@ def main() -> None:
             source_header_map = file_data["source_header_map"]
             number_col_idx = file_data["number_col_idx"]
             manager_name = str(filename).rsplit(".", 1)[0]
+            images_by_row = file_data["images_by_row"]
             logger.info("Обработка файла: %s", filename)
 
             if not document_header:
@@ -512,6 +567,8 @@ def main() -> None:
                     category=category,
                 )
                 all_rows.append(mapped_row)
+                image_row_index = header_row_idx + row_index
+                all_images.append(images_by_row.get(image_row_index, []))
                 total_rows_added += 1
 
                 if rows_count:
@@ -554,7 +611,7 @@ def main() -> None:
                 logger,
             )
             if output_xlsx is None:
-                output_xlsx = write_xlsx(document_header, all_rows, logger)
+                output_xlsx = write_xlsx(document_header, all_rows, all_images, logger)
 
         st.success("Объединение завершено.")
         st.write(
