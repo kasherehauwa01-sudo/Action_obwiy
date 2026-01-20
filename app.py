@@ -6,10 +6,12 @@ import re
 import csv
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
+
+import importlib.util
+import requests
 import streamlit as st
 import xlrd
 import xlwt
-from openpyxl import Workbook
 
 
 TARGET_HEADERS: List[str] = [
@@ -185,11 +187,41 @@ def map_row_to_target(
     return result
 
 
+def is_url(value: object) -> bool:
+    """Проверяет, что значение похоже на URL."""
+    if not value:
+        return False
+    text = str(value).strip().lower()
+    return text.startswith("http://") or text.startswith("https://")
+
+
+def fetch_image_bytes(url: str, logger: logging.Logger) -> Optional[bytes]:
+    """Пытается скачать изображение по URL."""
+    try:
+        response = requests.get(url, timeout=10)
+        response.raise_for_status()
+        return response.content
+    except requests.RequestException as exc:
+        logger.warning("Не удалось скачать изображение %s: %s", url, exc)
+        return None
+
+
 def write_xlsx(
     document_header: Sequence[Sequence[object]],
     rows: Sequence[Sequence[object]],
-) -> io.BytesIO:
+    logger: logging.Logger,
+) -> Optional[io.BytesIO]:
     """Записывает итоговые данные в .xlsx для дополнительной выгрузки."""
+    if importlib.util.find_spec("openpyxl") is None:
+        logger.warning("openpyxl не установлен, .xlsx файл не будет создан.")
+        return None
+    if importlib.util.find_spec("PIL") is None:
+        logger.warning("pillow не установлен, изображения в .xlsx не будут вставлены.")
+
+    from openpyxl import Workbook
+    from openpyxl.drawing.image import Image as OpenpyxlImage
+    from PIL import Image
+
     output = io.BytesIO()
     workbook = Workbook()
     sheet = workbook.active
@@ -205,9 +237,27 @@ def write_xlsx(
         sheet.cell(row=current_row, column=col_idx, value=header)
     current_row += 1
 
+    photo_col_index = FINAL_HEADERS.index("Фото") + 1
     for row in rows:
         for col_idx, value in enumerate(row, start=1):
             sheet.cell(row=current_row, column=col_idx, value=value)
+        photo_value = row[photo_col_index - 1] if len(row) >= photo_col_index else ""
+        if is_url(photo_value) and importlib.util.find_spec("PIL") is not None:
+            image_bytes = fetch_image_bytes(str(photo_value), logger)
+            if image_bytes:
+                try:
+                    with Image.open(io.BytesIO(image_bytes)) as img:
+                        buffer = io.BytesIO()
+                        img.thumbnail((120, 120))
+                        img.save(buffer, format="PNG")
+                        buffer.seek(0)
+                        openpyxl_image = OpenpyxlImage(buffer)
+                        openpyxl_image.anchor = sheet.cell(
+                            row=current_row, column=photo_col_index
+                        ).coordinate
+                        sheet.add_image(openpyxl_image)
+                except Exception as exc:
+                    logger.warning("Не удалось обработать изображение: %s", exc)
         current_row += 1
 
     workbook.save(output)
@@ -302,7 +352,7 @@ def main() -> None:
         type=["xls"],
         accept_multiple_files=True,
     )
-    build_xlsx = st.checkbox("Сформировать дополнительный .xlsx (конвертация .xls → .xlsx)")
+    build_xlsx = True
 
     st.sidebar.header("Загруженные файлы")
     if uploaded_files:
@@ -316,6 +366,8 @@ def main() -> None:
             st.warning("Не выбраны файлы.")
             return
 
+        st.write("Общий прогресс обработки:")
+        progress_overall = st.progress(0)
         st.write("Прогресс по файлам:")
         progress_files = st.progress(0)
         st.write("Прогресс по строкам текущего файла:")
@@ -337,44 +389,65 @@ def main() -> None:
         total_rows_processed = 0
         total_rows_added = 0
         categories_found = 0
+        total_rows_expected = 0
+        prepared_files: List[Dict[str, object]] = []
 
-        for file_index, uploaded in enumerate(uploaded_files, start=1):
+        for uploaded in uploaded_files:
             filename = uploaded.name
-            manager_name = filename.rsplit(".", 1)[0]
-            logger.info("Обработка файла: %s", filename)
-
             try:
                 rows = read_xls_to_rows(uploaded.getvalue(), logger)
             except Exception as exc:
                 logger.error("Не удалось прочитать файл %s: %s", filename, exc)
-                progress_files.progress(file_index / total_files)
                 continue
 
             header_row_idx = detect_table_header_row(rows)
             if header_row_idx is None:
                 logger.warning("Шапка таблицы не найдена в файле %s", filename)
-                progress_files.progress(file_index / total_files)
                 continue
-
-            if not document_header:
-                document_header = extract_document_header(rows, header_row_idx)
 
             header_row = rows[header_row_idx]
             source_header_map = prepare_source_header_map(header_row)
-
             number_col_idx = find_number_column(source_header_map)
             if number_col_idx is None:
                 logger.warning(
                     "Не удалось определить колонку '№' в файле %s, файл пропущен.",
                     filename,
                 )
-                progress_files.progress(file_index / total_files)
                 continue
+
+            data_rows = rows[header_row_idx + 1 :]
+            total_rows_expected += len(data_rows)
+            prepared_files.append(
+                {
+                    "filename": filename,
+                    "rows": rows,
+                    "header_row_idx": header_row_idx,
+                    "source_header_map": source_header_map,
+                    "number_col_idx": number_col_idx,
+                }
+            )
+
+        for file_index, file_data in enumerate(prepared_files, start=1):
+            filename = file_data["filename"]
+            rows = file_data["rows"]
+            header_row_idx = file_data["header_row_idx"]
+            source_header_map = file_data["source_header_map"]
+            number_col_idx = file_data["number_col_idx"]
+            manager_name = str(filename).rsplit(".", 1)[0]
+            logger.info("Обработка файла: %s", filename)
+
+            if not document_header:
+                document_header = extract_document_header(rows, header_row_idx)
 
             data_rows = rows[header_row_idx + 1 :]
             rows_count = len(data_rows)
             for row_index, row in enumerate(data_rows, start=1):
                 total_rows_processed += 1
+                if total_rows_expected:
+                    progress_overall.progress(
+                        min(total_rows_processed / total_rows_expected, 1.0)
+                    )
+
                 number_value = row[number_col_idx] if number_col_idx < len(row) else ""
                 if is_empty(number_value):
                     continue
@@ -406,7 +479,7 @@ def main() -> None:
                 if rows_count:
                     progress_rows.progress(row_index / rows_count)
 
-            progress_files.progress(file_index / total_files)
+            progress_files.progress(file_index / len(prepared_files))
 
         if not all_rows:
             logger.warning("Нет данных для сохранения.")
@@ -435,7 +508,7 @@ def main() -> None:
         workbook.save(output)
         output.seek(0)
 
-        output_xlsx = write_xlsx(document_header, all_rows) if build_xlsx else None
+        output_xlsx = write_xlsx(document_header, all_rows, logger) if build_xlsx else None
 
         st.success("Объединение завершено.")
         st.write(
@@ -450,7 +523,7 @@ def main() -> None:
             file_name="Акция ОБЩИЙ.xls",
             mime="application/vnd.ms-excel",
         )
-        if output_xlsx:
+        if output_xlsx is not None:
             st.download_button(
                 label="Скачать Акция ОБЩИЙ.xlsx",
                 data=output_xlsx,
