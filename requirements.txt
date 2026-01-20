@@ -1,0 +1,7 @@
+streamlit
+pandas
+xlrd==2.*
+xlwt
+requests
+beautifulsoup4
+lxml
