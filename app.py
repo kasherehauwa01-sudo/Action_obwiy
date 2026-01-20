@@ -283,6 +283,16 @@ def write_xlsx(
         category_col_index: len("Категория") + 2,
     }
 
+    def fit_image_to_cell(image: Image.Image, row_idx: int) -> Image.Image:
+        """Подгоняет изображение под размер ячейки, чтобы оно не выходило за её пределы."""
+        column_letter = get_column_letter(photo_col_index)
+        column_width = sheet.column_dimensions[column_letter].width or 15.0
+        row_height = sheet.row_dimensions[row_idx].height or 15 * 1.05
+        max_width_px = max(int(column_width * 7), 1)
+        max_height_px = max(int(row_height * 1.33), 1)
+        image.thumbnail((max_width_px, max_height_px))
+        return image
+
     for row_index, row in enumerate(rows):
         sheet.row_dimensions[current_row].height = max(
             sheet.row_dimensions[current_row].height or 0,
@@ -323,7 +333,7 @@ def write_xlsx(
             try:
                 with Image.open(io.BytesIO(image_bytes)) as img:
                     buffer = io.BytesIO()
-                    img.thumbnail((90, 90))
+                    img = fit_image_to_cell(img, current_row)
                     img.save(buffer, format="PNG")
                     buffer.seek(0)
                     openpyxl_image = OpenpyxlImage(buffer)
@@ -331,13 +341,9 @@ def write_xlsx(
                         row=current_row, column=photo_col_index
                     ).coordinate
                     openpyxl_image.anchor = f"{get_column_letter(photo_col_index)}{current_row}"
-                    openpyxl_image.width = 90
-                    openpyxl_image.height = 90
+                    openpyxl_image.width = img.width
+                    openpyxl_image.height = img.height
                     sheet.add_image(openpyxl_image)
-                    sheet.row_dimensions[current_row].height = max(
-                        sheet.row_dimensions[current_row].height or 0,
-                        img.height * 0.75 + 5,
-                    )
                     column_letter = sheet.cell(
                         row=current_row, column=photo_col_index
                     ).column_letter
@@ -358,7 +364,7 @@ def write_xlsx(
                 try:
                     with Image.open(io.BytesIO(image_bytes)) as img:
                         buffer = io.BytesIO()
-                        img.thumbnail((90, 90))
+                        img = fit_image_to_cell(img, current_row)
                         img.save(buffer, format="PNG")
                         buffer.seek(0)
                         openpyxl_image = OpenpyxlImage(buffer)
@@ -366,13 +372,9 @@ def write_xlsx(
                             row=current_row, column=photo_col_index
                         ).coordinate
                         openpyxl_image.anchor = f"{get_column_letter(photo_col_index)}{current_row}"
-                        openpyxl_image.width = 90
-                        openpyxl_image.height = 90
+                        openpyxl_image.width = img.width
+                        openpyxl_image.height = img.height
                         sheet.add_image(openpyxl_image)
-                        sheet.row_dimensions[current_row].height = max(
-                            sheet.row_dimensions[current_row].height or 0,
-                            img.height * 0.75 + 5,
-                        )
                         column_letter = sheet.cell(
                             row=current_row, column=photo_col_index
                         ).column_letter
