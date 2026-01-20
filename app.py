@@ -210,12 +210,12 @@ def fetch_image_bytes(url: str, logger: logging.Logger) -> Optional[bytes]:
 
 
 def convert_xls_to_xlsx_libreoffice(
-    xls_bytes: bytes, logger: logging.Logger
+    xls_bytes: bytes,
+    libreoffice_path: Optional[str],
+    logger: logging.Logger,
 ) -> Optional[io.BytesIO]:
     """Конвертирует .xls в .xlsx через LibreOffice в headless-режиме."""
-    libreoffice_path = shutil.which("libreoffice")
     if not libreoffice_path:
-        logger.warning("LibreOffice не найден, конвертация .xls → .xlsx пропущена.")
         return None
 
     with tempfile.TemporaryDirectory() as temp_dir:
@@ -410,10 +410,8 @@ def main() -> None:
             st.warning("Не выбраны файлы.")
             return
 
-        st.write("Общий прогресс обработки:")
+        st.write("Общий прогресс по файлам:")
         progress_overall = st.progress(0)
-        st.write("Прогресс по файлам:")
-        progress_files = st.progress(0)
         st.write("Прогресс по строкам текущего файла:")
         progress_rows = st.progress(0)
 
@@ -423,6 +421,11 @@ def main() -> None:
             logger.warning(
                 "Файл keywords не найден или пустой, колонка 'Категория' будет пустой."
             )
+        libreoffice_path = shutil.which("libreoffice")
+        if not libreoffice_path:
+            logger.warning(
+                "LibreOffice не найден, конвертация .xls → .xlsx пропущена."
+            )
         logger.info(
             "Встроенные изображения в .xls не переносятся, сохраняются только значения и ссылки."
         )
@@ -430,10 +433,8 @@ def main() -> None:
         all_rows: List[List[object]] = []
         document_header: List[List[object]] = []
         total_files = len(uploaded_files)
-        total_rows_processed = 0
         total_rows_added = 0
         categories_found = 0
-        total_rows_expected = 0
         prepared_files: List[Dict[str, object]] = []
 
         for uploaded in uploaded_files:
@@ -460,7 +461,6 @@ def main() -> None:
                 continue
 
             data_rows = rows[header_row_idx + 1 :]
-            total_rows_expected += len(data_rows)
             prepared_files.append(
                 {
                     "filename": filename,
@@ -486,12 +486,6 @@ def main() -> None:
             data_rows = rows[header_row_idx + 1 :]
             rows_count = len(data_rows)
             for row_index, row in enumerate(data_rows, start=1):
-                total_rows_processed += 1
-                if total_rows_expected:
-                    progress_overall.progress(
-                        min(total_rows_processed / total_rows_expected, 1.0)
-                    )
-
                 number_value = row[number_col_idx] if number_col_idx < len(row) else ""
                 if is_empty(number_value):
                     continue
@@ -523,14 +517,14 @@ def main() -> None:
                 if rows_count:
                     progress_rows.progress(row_index / rows_count)
 
-            progress_files.progress(file_index / len(prepared_files))
+            progress_overall.progress(file_index / len(prepared_files))
 
         if not all_rows:
             logger.warning("Нет данных для сохранения.")
             st.text_area("Логи", "\n".join(log_messages), height=200)
             return
 
-        output = io.BytesIO()
+        output_xls = io.BytesIO()
         workbook = xlwt.Workbook()
         sheet = workbook.add_sheet("Общий")
 
@@ -549,12 +543,16 @@ def main() -> None:
                 sheet.write(current_row, col_idx, value)
             current_row += 1
 
-        workbook.save(output)
-        output.seek(0)
+        workbook.save(output_xls)
+        output_xls.seek(0)
 
         output_xlsx = None
         if build_xlsx:
-            output_xlsx = convert_xls_to_xlsx_libreoffice(output.getvalue(), logger)
+            output_xlsx = convert_xls_to_xlsx_libreoffice(
+                output_xls.getvalue(),
+                libreoffice_path,
+                logger,
+            )
             if output_xlsx is None:
                 output_xlsx = write_xlsx(document_header, all_rows, logger)
 
@@ -565,12 +563,6 @@ def main() -> None:
             f"Категорий найдено: {categories_found}."
         )
 
-        st.download_button(
-            label="Скачать Акция ОБЩИЙ.xls",
-            data=output,
-            file_name="Акция ОБЩИЙ.xls",
-            mime="application/vnd.ms-excel",
-        )
         if output_xlsx is not None:
             st.download_button(
                 label="Скачать Акция ОБЩИЙ.xlsx",
@@ -578,6 +570,8 @@ def main() -> None:
                 file_name="Акция ОБЩИЙ.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             )
+        else:
+            st.warning("Не удалось сформировать .xlsx файл для скачивания.")
 
         st.text_area("Логи", "\n".join(log_messages), height=200)
 
