@@ -12,6 +12,8 @@ import requests
 import streamlit as st
 from openpyxl import load_workbook, Workbook
 from openpyxl.drawing.image import Image as OpenpyxlImage
+from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+from openpyxl.utils import get_column_letter
 from PIL import Image
 
 
@@ -150,6 +152,8 @@ def build_source_header_map(header_row: Sequence[object]) -> Dict[str, int]:
         key = normalize_header(cell)
         if key and key not in mapping:
             mapping[key] = idx
+        if key == "акционная цена" and "акция" not in mapping:
+            mapping["акция"] = idx
     return mapping
 
 
@@ -222,20 +226,68 @@ def write_xlsx(
     sheet = workbook.active
     sheet.title = "Общий"
 
+    header_fill = PatternFill(start_color="D9D9D9", end_color="D9D9D9", fill_type="solid")
+    header_font = Font(bold=True)
+    header_alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    body_alignment = Alignment(vertical="top", wrap_text=False)
+    thin_side = Side(style="thin", color="000000")
+    thin_border = Border(
+        left=thin_side,
+        right=thin_side,
+        top=thin_side,
+        bottom=thin_side,
+    )
+
     current_row = 1
     for header_row in document_header:
         for col_idx, value in enumerate(header_row, start=1):
-            sheet.cell(row=current_row, column=col_idx, value=value)
+            cell = sheet.cell(row=current_row, column=col_idx, value=value)
+            cell.border = thin_border
         current_row += 1
 
     for col_idx, header in enumerate(FINAL_HEADERS, start=1):
-        sheet.cell(row=current_row, column=col_idx, value=header)
+        cell = sheet.cell(row=current_row, column=col_idx, value=header)
+        cell.fill = header_fill
+        cell.font = header_font
+        cell.alignment = header_alignment
+        cell.border = thin_border
     current_row += 1
 
     photo_col_index = FINAL_HEADERS.index("Фото") + 1
+    code_col_index = FINAL_HEADERS.index("Код") + 1
+    name_col_index = FINAL_HEADERS.index("Наименование товаров") + 1
+    discount_col_index = FINAL_HEADERS.index("скидка") + 1
+    markup_col_index = FINAL_HEADERS.index("наценка") + 1
+    code_max_len = max(len("Код"), 1)
+
     for row_index, row in enumerate(rows):
         for col_idx, value in enumerate(row, start=1):
-            sheet.cell(row=current_row, column=col_idx, value=value)
+            cell = sheet.cell(row=current_row, column=col_idx, value=value)
+            cell.border = thin_border
+            if col_idx == name_col_index:
+                cell.alignment = Alignment(vertical="top", wrap_text=True)
+            else:
+                cell.alignment = body_alignment
+
+            if col_idx == code_col_index and value is not None:
+                code_max_len = max(code_max_len, len(str(value)))
+
+            if col_idx == discount_col_index and value is not None:
+                try:
+                    numeric_value = float(value)
+                except (TypeError, ValueError):
+                    pass
+                else:
+                    if numeric_value > 1:
+                        numeric_value = numeric_value / 100
+                    cell.value = numeric_value
+                    cell.number_format = "0%"
+
+            if col_idx == markup_col_index:
+                akc_col_letter = get_column_letter(FINAL_HEADERS.index("акция") + 1)
+                zakup_col_letter = get_column_letter(FINAL_HEADERS.index("Закупочная") + 1)
+                cell.value = f"=ROUND({akc_col_letter}{current_row}/{zakup_col_letter}{current_row}*100-100,2)"
+                cell.number_format = "0.00"
         images = images_for_rows[row_index] if row_index < len(images_for_rows) else []
         for image_bytes in images:
             try:
@@ -295,6 +347,12 @@ def write_xlsx(
                 except Exception as exc:
                     logger.warning("Не удалось обработать изображение: %s", exc)
         current_row += 1
+
+    sheet.column_dimensions[get_column_letter(name_col_index)].width = 600
+    sheet.column_dimensions[get_column_letter(code_col_index)].width = max(
+        sheet.column_dimensions[get_column_letter(code_col_index)].width or 0,
+        code_max_len + 2,
+    )
 
     workbook.save(output)
     output.seek(0)
