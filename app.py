@@ -30,7 +30,6 @@ TARGET_HEADERS: List[str] = [
     "Цена опт.",
     "Закупочная",
     "скидка",
-    "Акционная цена",
     "наценка",
 ]
 FINAL_HEADERS: List[str] = TARGET_HEADERS + ["Менеджер", "Категория"]
@@ -152,8 +151,8 @@ def build_source_header_map(header_row: Sequence[object]) -> Dict[str, int]:
         key = normalize_header(cell)
         if key and key not in mapping:
             mapping[key] = idx
-        if key == "акция" and "акционная цена" not in mapping:
-            mapping["акционная цена"] = idx
+        if "наценка" in key and "наценка" not in mapping:
+            mapping["наценка"] = idx
     return mapping
 
 
@@ -245,6 +244,7 @@ def write_xlsx(
         bottom=white_side,
     )
 
+    manager_col_index = FINAL_HEADERS.index("Менеджер") + 1
     current_row = 1
     for header_row in document_header:
         for col_idx, value in enumerate(header_row, start=1):
@@ -252,12 +252,11 @@ def write_xlsx(
             cell.border = white_border
         current_row += 1
 
-    action_col_index = FINAL_HEADERS.index("Акционная цена") + 1
     for col_idx, header in enumerate(FINAL_HEADERS, start=1):
         cell = sheet.cell(row=current_row, column=col_idx, value=header)
         cell.fill = header_fill
         cell.font = header_font
-        if col_idx in (1, 2, action_col_index):
+        if col_idx in (1, 2, manager_col_index):
             cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
         else:
             cell.alignment = header_alignment
@@ -269,19 +268,26 @@ def write_xlsx(
     name_col_index = FINAL_HEADERS.index("Наименование товаров") + 1
     discount_col_index = FINAL_HEADERS.index("скидка") + 1
     markup_col_index = FINAL_HEADERS.index("наценка") + 1
-    action_col_index = FINAL_HEADERS.index("Акционная цена") + 1
     purchase_col_index = FINAL_HEADERS.index("Закупочная") + 1
-    manager_col_index = FINAL_HEADERS.index("Менеджер") + 1
     category_col_index = FINAL_HEADERS.index("Категория") + 1
     code_max_len = max(len("Код"), 1)
     header_based_widths = {
         purchase_col_index: len("Закупочная") + 2,
         discount_col_index: len("скидка") + 2,
-        action_col_index: 10,
         markup_col_index: len("наценка") + 2,
         manager_col_index: len("Менеджер") + 2,
         category_col_index: len("Категория") + 2,
     }
+
+    def fit_image_to_cell(image: Image.Image, row_idx: int) -> Image.Image:
+        """Подгоняет изображение под размер ячейки, чтобы оно не выходило за её пределы."""
+        column_letter = get_column_letter(photo_col_index)
+        column_width = sheet.column_dimensions[column_letter].width or 15.0
+        row_height = sheet.row_dimensions[row_idx].height or 15 * 1.05
+        max_width_px = max(int(column_width * 7), 1)
+        max_height_px = max(int(row_height * 1.33), 1)
+        image.thumbnail((max_width_px, max_height_px))
+        return image
 
     for row_index, row in enumerate(rows):
         sheet.row_dimensions[current_row].height = max(
@@ -292,6 +298,8 @@ def write_xlsx(
             cell = sheet.cell(row=current_row, column=col_idx, value=value)
             cell.border = thin_border
             if col_idx == name_col_index:
+                cell.alignment = Alignment(vertical="top", wrap_text=True)
+            elif col_idx == manager_col_index:
                 cell.alignment = Alignment(vertical="top", wrap_text=True)
             else:
                 cell.alignment = body_alignment
@@ -311,19 +319,13 @@ def write_xlsx(
                     cell.number_format = "0%"
 
             if col_idx == markup_col_index:
-                akc_col_letter = get_column_letter(action_col_index)
-                zakup_col_letter = get_column_letter(purchase_col_index)
-                cell.value = (
-                    f"=ROUND({akc_col_letter}{current_row}/"
-                    f"{zakup_col_letter}{current_row}*100-100,2)"
-                )
                 cell.number_format = "0.00"
         images = images_for_rows[row_index] if row_index < len(images_for_rows) else []
         for image_bytes in images:
             try:
                 with Image.open(io.BytesIO(image_bytes)) as img:
                     buffer = io.BytesIO()
-                    img.thumbnail((90, 90))
+                    img = fit_image_to_cell(img, current_row)
                     img.save(buffer, format="PNG")
                     buffer.seek(0)
                     openpyxl_image = OpenpyxlImage(buffer)
@@ -331,13 +333,9 @@ def write_xlsx(
                         row=current_row, column=photo_col_index
                     ).coordinate
                     openpyxl_image.anchor = f"{get_column_letter(photo_col_index)}{current_row}"
-                    openpyxl_image.width = 90
-                    openpyxl_image.height = 90
+                    openpyxl_image.width = img.width
+                    openpyxl_image.height = img.height
                     sheet.add_image(openpyxl_image)
-                    sheet.row_dimensions[current_row].height = max(
-                        sheet.row_dimensions[current_row].height or 0,
-                        img.height * 0.75 + 5,
-                    )
                     column_letter = sheet.cell(
                         row=current_row, column=photo_col_index
                     ).column_letter
@@ -358,7 +356,7 @@ def write_xlsx(
                 try:
                     with Image.open(io.BytesIO(image_bytes)) as img:
                         buffer = io.BytesIO()
-                        img.thumbnail((90, 90))
+                        img = fit_image_to_cell(img, current_row)
                         img.save(buffer, format="PNG")
                         buffer.seek(0)
                         openpyxl_image = OpenpyxlImage(buffer)
@@ -366,13 +364,9 @@ def write_xlsx(
                             row=current_row, column=photo_col_index
                         ).coordinate
                         openpyxl_image.anchor = f"{get_column_letter(photo_col_index)}{current_row}"
-                        openpyxl_image.width = 90
-                        openpyxl_image.height = 90
+                        openpyxl_image.width = img.width
+                        openpyxl_image.height = img.height
                         sheet.add_image(openpyxl_image)
-                        sheet.row_dimensions[current_row].height = max(
-                            sheet.row_dimensions[current_row].height or 0,
-                            img.height * 0.75 + 5,
-                        )
                         column_letter = sheet.cell(
                             row=current_row, column=photo_col_index
                         ).column_letter
@@ -600,7 +594,7 @@ def main() -> None:
             for row_index, row in enumerate(data_rows, start=1):
                 if row_index <= 3:
                     logger.info(
-                        "Пример строки %s: код=%s, наименование=%s, акционная цена=%s, скидка=%s, закупочная=%s",
+                        "Пример строки %s: код=%s, наименование=%s, скидка=%s, закупочная=%s",
                         row_index,
                         row[source_header_map.get("код", -1)]
                         if "код" in source_header_map
@@ -609,13 +603,6 @@ def main() -> None:
                         row[source_header_map.get("наименование товаров", -1)]
                         if "наименование товаров" in source_header_map
                         and source_header_map["наименование товаров"] < len(row)
-                        else "",
-                        row[source_header_map.get("акционная цена", -1)]
-                        if "акционная цена" in source_header_map
-                        and source_header_map["акционная цена"] < len(row)
-                        else row[source_header_map.get("акция", -1)]
-                        if "акция" in source_header_map
-                        and source_header_map["акция"] < len(row)
                         else "",
                         row[source_header_map.get("скидка", -1)]
                         if "скидка" in source_header_map
