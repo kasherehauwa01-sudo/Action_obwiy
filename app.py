@@ -148,13 +148,34 @@ def extract_document_header(
 def build_source_header_map(header_row: Sequence[object]) -> Dict[str, int]:
     """Создает маппинг нормализованных заголовков на индексы колонок."""
     mapping: Dict[str, int] = {}
+    action_aliases = {
+        "акция",
+        "акц цена",
+        "акццена",
+        "акционная цена",
+        "акционнаяцена",
+    }
     for idx, cell in enumerate(header_row):
         key = normalize_header(cell)
         if key and key not in mapping:
             mapping[key] = idx
-        if key == "акция" and "акционная цена" not in mapping:
+        if key in action_aliases and "акционная цена" not in mapping:
             mapping["акционная цена"] = idx
+        if "наценка" in key and "наценка" not in mapping:
+            mapping["наценка"] = idx
     return mapping
+
+
+def resolve_action_price_index(source_header_map: Dict[str, int]) -> Optional[int]:
+    """Возвращает индекс колонки "Акционная цена" или fallback перед "наценка"."""
+    action_idx = source_header_map.get("акционная цена")
+    if action_idx is not None:
+        return action_idx
+    markup_idx = source_header_map.get("наценка")
+    if markup_idx is None:
+        return None
+    fallback_idx = markup_idx - 1
+    return fallback_idx if fallback_idx >= 0 else None
 
 
 def find_number_column(header_map: Dict[str, int]) -> Optional[int]:
@@ -180,7 +201,14 @@ def map_row_to_target(
         normalized = normalize_header(header)
         source_idx = source_header_map.get(normalized)
         if source_idx is None or source_idx >= len(row):
-            result.append("")
+            if normalized == "акционная цена":
+                fallback_idx = resolve_action_price_index(source_header_map)
+                if fallback_idx is not None and fallback_idx < len(row):
+                    result.append(row[fallback_idx])
+                else:
+                    result.append("")
+            else:
+                result.append("")
         else:
             result.append(row[source_idx])
 
@@ -283,6 +311,16 @@ def write_xlsx(
         category_col_index: len("Категория") + 2,
     }
 
+    def fit_image_to_cell(image: Image.Image, row_idx: int) -> Image.Image:
+        """Подгоняет изображение под размер ячейки, чтобы оно не выходило за её пределы."""
+        column_letter = get_column_letter(photo_col_index)
+        column_width = sheet.column_dimensions[column_letter].width or 15.0
+        row_height = sheet.row_dimensions[row_idx].height or 15 * 1.05
+        max_width_px = max(int(column_width * 7), 1)
+        max_height_px = max(int(row_height * 1.33), 1)
+        image.thumbnail((max_width_px, max_height_px))
+        return image
+
     for row_index, row in enumerate(rows):
         sheet.row_dimensions[current_row].height = max(
             sheet.row_dimensions[current_row].height or 0,
@@ -323,7 +361,7 @@ def write_xlsx(
             try:
                 with Image.open(io.BytesIO(image_bytes)) as img:
                     buffer = io.BytesIO()
-                    img.thumbnail((90, 90))
+                    img = fit_image_to_cell(img, current_row)
                     img.save(buffer, format="PNG")
                     buffer.seek(0)
                     openpyxl_image = OpenpyxlImage(buffer)
@@ -331,13 +369,9 @@ def write_xlsx(
                         row=current_row, column=photo_col_index
                     ).coordinate
                     openpyxl_image.anchor = f"{get_column_letter(photo_col_index)}{current_row}"
-                    openpyxl_image.width = 90
-                    openpyxl_image.height = 90
+                    openpyxl_image.width = img.width
+                    openpyxl_image.height = img.height
                     sheet.add_image(openpyxl_image)
-                    sheet.row_dimensions[current_row].height = max(
-                        sheet.row_dimensions[current_row].height or 0,
-                        img.height * 0.75 + 5,
-                    )
                     column_letter = sheet.cell(
                         row=current_row, column=photo_col_index
                     ).column_letter
@@ -358,7 +392,7 @@ def write_xlsx(
                 try:
                     with Image.open(io.BytesIO(image_bytes)) as img:
                         buffer = io.BytesIO()
-                        img.thumbnail((90, 90))
+                        img = fit_image_to_cell(img, current_row)
                         img.save(buffer, format="PNG")
                         buffer.seek(0)
                         openpyxl_image = OpenpyxlImage(buffer)
@@ -366,13 +400,9 @@ def write_xlsx(
                             row=current_row, column=photo_col_index
                         ).coordinate
                         openpyxl_image.anchor = f"{get_column_letter(photo_col_index)}{current_row}"
-                        openpyxl_image.width = 90
-                        openpyxl_image.height = 90
+                        openpyxl_image.width = img.width
+                        openpyxl_image.height = img.height
                         sheet.add_image(openpyxl_image)
-                        sheet.row_dimensions[current_row].height = max(
-                            sheet.row_dimensions[current_row].height or 0,
-                            img.height * 0.75 + 5,
-                        )
                         column_letter = sheet.cell(
                             row=current_row, column=photo_col_index
                         ).column_letter
@@ -561,13 +591,30 @@ def main() -> None:
 
             target_to_source = {}
             missing_targets = []
+            action_fallback_idx = resolve_action_price_index(source_header_map)
+            action_has_direct = "акционная цена" in source_header_map
             for header in TARGET_HEADERS[2:]:
                 key = normalize_header(header)
                 if key in source_header_map:
                     target_to_source[header] = source_header_map[key] + 1
+                elif key == "акционная цена":
+                    if action_fallback_idx is not None:
+                        target_to_source[header] = action_fallback_idx + 1
+                    else:
+                        missing_targets.append(header)
                 else:
                     missing_targets.append(header)
             logger.info("Сопоставление колонок: %s", target_to_source)
+            if action_fallback_idx is not None and not action_has_direct:
+                logger.info(
+                    "Колонка 'Акционная цена' взята из колонки перед 'наценка' (индекс %s).",
+                    action_fallback_idx + 1,
+                )
+            if action_fallback_idx is None:
+                logger.warning(
+                    "Источник для колонки 'Акционная цена' не найден "
+                    "(нет заголовков: Акция/Акц.цена/Акционная цена и нет 'наценка')."
+                )
             if missing_targets:
                 logger.warning("Колонки без источника: %s", ", ".join(missing_targets))
 
@@ -598,6 +645,7 @@ def main() -> None:
 
             data_rows = rows[header_row_idx + 1 :]
             for row_index, row in enumerate(data_rows, start=1):
+                action_price_idx = resolve_action_price_index(source_header_map)
                 if row_index <= 3:
                     logger.info(
                         "Пример строки %s: код=%s, наименование=%s, акционная цена=%s, скидка=%s, закупочная=%s",
@@ -613,9 +661,8 @@ def main() -> None:
                         row[source_header_map.get("акционная цена", -1)]
                         if "акционная цена" in source_header_map
                         and source_header_map["акционная цена"] < len(row)
-                        else row[source_header_map.get("акция", -1)]
-                        if "акция" in source_header_map
-                        and source_header_map["акция"] < len(row)
+                        else row[action_price_idx]
+                        if action_price_idx is not None and action_price_idx < len(row)
                         else "",
                         row[source_header_map.get("скидка", -1)]
                         if "скидка" in source_header_map
