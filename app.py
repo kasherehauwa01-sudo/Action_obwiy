@@ -30,6 +30,7 @@ TARGET_HEADERS: List[str] = [
     "Цена опт.",
     "Закупочная",
     "скидка",
+    "Акционная цена",
     "наценка",
 ]
 FINAL_HEADERS: List[str] = TARGET_HEADERS + ["Менеджер", "Категория"]
@@ -153,6 +154,8 @@ def build_source_header_map(header_row: Sequence[object]) -> Dict[str, int]:
             mapping[key] = idx
         if "скидка" in key and "скидка" not in mapping:
             mapping["скидка"] = idx
+        if "акц" in key and "акционная цена" not in mapping:
+            mapping["акционная цена"] = idx
         if "наценка" in key and "наценка" not in mapping:
             mapping["наценка"] = idx
     return mapping
@@ -269,6 +272,7 @@ def write_xlsx(
     code_col_index = FINAL_HEADERS.index("Код") + 1
     name_col_index = FINAL_HEADERS.index("Наименование товаров") + 1
     discount_col_index = FINAL_HEADERS.index("скидка") + 1
+    action_price_col_index = FINAL_HEADERS.index("Акционная цена") + 1
     markup_col_index = FINAL_HEADERS.index("наценка") + 1
     purchase_col_index = FINAL_HEADERS.index("Закупочная") + 1
     category_col_index = FINAL_HEADERS.index("Категория") + 1
@@ -276,6 +280,7 @@ def write_xlsx(
     header_based_widths = {
         purchase_col_index: len("Закупочная") + 2,
         discount_col_index: len("скидка") + 2,
+        action_price_col_index: len("Акционная цена") + 2,
         markup_col_index: len("наценка") + 2,
         manager_col_index: len("Менеджер") + 2,
         category_col_index: len("Категория") + 2,
