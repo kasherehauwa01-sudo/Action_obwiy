@@ -322,6 +322,12 @@ def write_xlsx(
             else:
                 cell.alignment = body_alignment
 
+            if col_idx == 2 and value is not None:
+                try:
+                    cell.value = round(float(value))
+                except (TypeError, ValueError):
+                    pass
+
             if col_idx == code_col_index and value is not None:
                 code_max_len = max(code_max_len, len(str(value)))
 
