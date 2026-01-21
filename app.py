@@ -342,8 +342,24 @@ def write_xlsx(
                     cell.value = numeric_value
                     cell.number_format = "0%"
 
+            if col_idx == action_price_col_index and value is not None:
+                try:
+                    cell.value = round(float(value))
+                except (TypeError, ValueError):
+                    pass
+
             if col_idx == markup_col_index:
-                cell.number_format = "0.00"
+                purchase_value = row[purchase_col_index - 1] if len(row) >= purchase_col_index else None
+                action_value = row[action_price_col_index - 1] if len(row) >= action_price_col_index else None
+                try:
+                    purchase_value = float(purchase_value)
+                    action_value = float(action_value)
+                    if purchase_value:
+                        markup_value = round(action_value / purchase_value * 100 - 100)
+                        cell.value = markup_value
+                except (TypeError, ValueError, ZeroDivisionError):
+                    pass
+                cell.number_format = "0"
         images = images_for_rows[row_index] if row_index < len(images_for_rows) else []
         for image_bytes in images:
             if importlib.util.find_spec("PIL") is None:
