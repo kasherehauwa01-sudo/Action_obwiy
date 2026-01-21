@@ -553,6 +553,12 @@ def main() -> None:
                 "Колонки в источнике (нормализованные): %s",
                 ", ".join(sorted(source_header_map.keys())),
             )
+            if "акционная цена" not in source_header_map:
+                logger.warning(
+                    "Колонка с ключом 'акц' не найдена в шапке файла %s, "
+                    "значения для 'Акционная цена' будут пустыми.",
+                    filename,
+                )
             number_col_idx = find_number_column(source_header_map)
             if number_col_idx is None:
                 logger.warning(
