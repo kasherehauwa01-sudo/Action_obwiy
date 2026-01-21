@@ -392,8 +392,8 @@ def write_xlsx(
         sheet.column_dimensions[get_column_letter(code_col_index)].width or 0,
         code_max_len + 2,
     )
-    sheet.column_dimensions[get_column_letter(1)].width = 10
-    sheet.column_dimensions[get_column_letter(2)].width = 10
+    sheet.column_dimensions[get_column_letter(1)].width = 15
+    sheet.column_dimensions[get_column_letter(2)].width = 15
     for col_index, width in header_based_widths.items():
         sheet.column_dimensions[get_column_letter(col_index)].width = max(
             sheet.column_dimensions[get_column_letter(col_index)].width or 0,
