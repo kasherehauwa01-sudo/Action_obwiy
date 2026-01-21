@@ -104,7 +104,7 @@ def read_xlsx_to_rows(
 ) -> Tuple[List[List[object]], Dict[int, List[bytes]]]:
     """Читает .xlsx в список строк и извлекает изображения."""
     try:
-        workbook = load_workbook(io.BytesIO(file_bytes))
+        workbook = load_workbook(io.BytesIO(file_bytes), data_only=True)
     except Exception as exc:
         logger.error("Не удалось открыть .xlsx файл: %s", exc)
         return [], {}
