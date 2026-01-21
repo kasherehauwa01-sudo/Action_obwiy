@@ -281,15 +281,26 @@ def write_xlsx(
         category_col_index: len("Категория") + 2,
     }
 
-    def fit_image_to_cell(image: Image.Image, row_idx: int) -> Image.Image:
-        """Подгоняет изображение под размер ячейки, чтобы оно не выходило за её пределы."""
+    photo_size_px = 100
+    photo_padding_ratio = 1.05
+    photo_col_width = (photo_size_px / 7) * photo_padding_ratio
+    photo_row_height = (photo_size_px * 0.75) * photo_padding_ratio
+
+    def fit_image_to_cell(image: Image.Image) -> Image.Image:
+        """Подгоняет изображение под 100x100, чтобы оно не выходило за пределы ячейки."""
+        return image.resize((photo_size_px, photo_size_px))
+
+    def ensure_photo_cell_size(row_idx: int) -> None:
+        """Подгоняет размеры ячейки под размер изображения + 5%."""
         column_letter = get_column_letter(photo_col_index)
-        column_width = sheet.column_dimensions[column_letter].width or 15.0
-        row_height = sheet.row_dimensions[row_idx].height or 15 * 1.05
-        max_width_px = max(int(column_width * 7), 1)
-        max_height_px = max(int(row_height * 1.33), 1)
-        image.thumbnail((max_width_px, max_height_px))
-        return image
+        sheet.column_dimensions[column_letter].width = max(
+            sheet.column_dimensions[column_letter].width or 0,
+            photo_col_width,
+        )
+        sheet.row_dimensions[row_idx].height = max(
+            sheet.row_dimensions[row_idx].height or 0,
+            photo_row_height,
+        )
 
     for row_index, row in enumerate(rows):
         sheet.row_dimensions[current_row].height = max(
@@ -322,7 +333,47 @@ def write_xlsx(
 
             if col_idx == markup_col_index:
                 cell.number_format = "0.00"
-        # В новой версии не переносим изображения в колонку "Фото".
+        images = images_for_rows[row_index] if row_index < len(images_for_rows) else []
+        for image_bytes in images:
+            if importlib.util.find_spec("PIL") is None:
+                logger.warning("pillow не установлен, изображения в .xlsx не будут вставлены.")
+                break
+            try:
+                with Image.open(io.BytesIO(image_bytes)) as img:
+                    buffer = io.BytesIO()
+                    img = fit_image_to_cell(img)
+                    img.save(buffer, format="PNG")
+                    buffer.seek(0)
+                    openpyxl_image = OpenpyxlImage(buffer)
+                    openpyxl_image.anchor = f"{get_column_letter(photo_col_index)}{current_row}"
+                    openpyxl_image.width = photo_size_px
+                    openpyxl_image.height = photo_size_px
+                    ensure_photo_cell_size(current_row)
+                    sheet.add_image(openpyxl_image)
+            except Exception as exc:
+                logger.warning("Не удалось обработать изображение: %s", exc)
+        photo_value = row[photo_col_index - 1] if len(row) >= photo_col_index else ""
+        if (
+            not images
+            and is_url(photo_value)
+            and importlib.util.find_spec("PIL") is not None
+        ):
+            image_bytes = fetch_image_bytes(str(photo_value), logger)
+            if image_bytes:
+                try:
+                    with Image.open(io.BytesIO(image_bytes)) as img:
+                        buffer = io.BytesIO()
+                        img = fit_image_to_cell(img)
+                        img.save(buffer, format="PNG")
+                        buffer.seek(0)
+                        openpyxl_image = OpenpyxlImage(buffer)
+                        openpyxl_image.anchor = f"{get_column_letter(photo_col_index)}{current_row}"
+                        openpyxl_image.width = photo_size_px
+                        openpyxl_image.height = photo_size_px
+                        ensure_photo_cell_size(current_row)
+                        sheet.add_image(openpyxl_image)
+                except Exception as exc:
+                    logger.warning("Не удалось обработать изображение: %s", exc)
         current_row += 1
 
     sheet.column_dimensions[get_column_letter(name_col_index)].width = 60
