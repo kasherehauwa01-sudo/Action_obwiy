@@ -151,6 +151,8 @@ def build_source_header_map(header_row: Sequence[object]) -> Dict[str, int]:
         key = normalize_header(cell)
         if key and key not in mapping:
             mapping[key] = idx
+        if "скидка" in key and "скидка" not in mapping:
+            mapping["скидка"] = idx
         if "наценка" in key and "наценка" not in mapping:
             mapping["наценка"] = idx
     return mapping
@@ -320,62 +322,7 @@ def write_xlsx(
 
             if col_idx == markup_col_index:
                 cell.number_format = "0.00"
-        images = images_for_rows[row_index] if row_index < len(images_for_rows) else []
-        for image_bytes in images:
-            try:
-                with Image.open(io.BytesIO(image_bytes)) as img:
-                    buffer = io.BytesIO()
-                    img = fit_image_to_cell(img, current_row)
-                    img.save(buffer, format="PNG")
-                    buffer.seek(0)
-                    openpyxl_image = OpenpyxlImage(buffer)
-                    openpyxl_image.anchor = sheet.cell(
-                        row=current_row, column=photo_col_index
-                    ).coordinate
-                    openpyxl_image.anchor = f"{get_column_letter(photo_col_index)}{current_row}"
-                    openpyxl_image.width = img.width
-                    openpyxl_image.height = img.height
-                    sheet.add_image(openpyxl_image)
-                    column_letter = sheet.cell(
-                        row=current_row, column=photo_col_index
-                    ).column_letter
-                    sheet.column_dimensions[column_letter].width = max(
-                        sheet.column_dimensions[column_letter].width or 0,
-                        15.0,
-                    )
-            except Exception as exc:
-                logger.warning("Не удалось обработать изображение: %s", exc)
-        photo_value = row[photo_col_index - 1] if len(row) >= photo_col_index else ""
-        if (
-            not images
-            and is_url(photo_value)
-            and importlib.util.find_spec("PIL") is not None
-        ):
-            image_bytes = fetch_image_bytes(str(photo_value), logger)
-            if image_bytes:
-                try:
-                    with Image.open(io.BytesIO(image_bytes)) as img:
-                        buffer = io.BytesIO()
-                        img = fit_image_to_cell(img, current_row)
-                        img.save(buffer, format="PNG")
-                        buffer.seek(0)
-                        openpyxl_image = OpenpyxlImage(buffer)
-                        openpyxl_image.anchor = sheet.cell(
-                            row=current_row, column=photo_col_index
-                        ).coordinate
-                        openpyxl_image.anchor = f"{get_column_letter(photo_col_index)}{current_row}"
-                        openpyxl_image.width = img.width
-                        openpyxl_image.height = img.height
-                        sheet.add_image(openpyxl_image)
-                        column_letter = sheet.cell(
-                            row=current_row, column=photo_col_index
-                        ).column_letter
-                        sheet.column_dimensions[column_letter].width = max(
-                            sheet.column_dimensions[column_letter].width or 0,
-                            15.0,
-                        )
-                except Exception as exc:
-                    logger.warning("Не удалось обработать изображение: %s", exc)
+        # В новой версии не переносим изображения в колонку "Фото".
         current_row += 1
 
     sheet.column_dimensions[get_column_letter(name_col_index)].width = 60
